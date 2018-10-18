@@ -41,6 +41,7 @@ export TRAP_CMD=":"
 trap_receiver() {
 	bash -c "$TRAP_CMD"
 	TRAP_CMD=
+	sync
 	exit 1
 }
 trap "trap_receiver" EXIT
@@ -79,7 +80,7 @@ fi
 
 # Main proceedure
 
-PACKAGES="coreutils findutils util-linux shadow sed bash gnupg"
+PACKAGES="coreutils findutils util-linux shadow sed bash gnupg grep"
 PACKAGE_DIR="/opt/gpg-maintaining-container"
 
 echo "Please prepare a USB stick which stores credentials."
@@ -195,13 +196,15 @@ mknod -m 0666 null c 1 3
 mknod -m 0666 zero c 1 5
 mknod -m 0666 random c 1 8
 mknod -m 0666 urandom c 1 9
+#mknod -m 0666 tty c 5 0
+#chgrp tty tty
 pacman -r "$ROOT" -Sy $PACKAGES --cachedir="$ROOT/var/cache/pacman/pkg" --noconfirm || errorexit "pacman"
 cat > "$ROOT"/bin/apply-subkey <<'EOF'
 #!/bin/bash
 echo -n "Enter your name or e-mail address: "
 read NAME
 echo ""
-GPG_RES=`LANG=C gpg --list-keys --with-colons "$NAME" 2>&/dev/null | grep -e "^pub" -A 1 | tail -n 1 |  sed -e 's/^.*:\([^:]*\):$/\1/'`
+GPG_RES=`LANG=C gpg --list-keys --with-colons "$NAME" 2>/dev/null | grep -e "^pub" -A 1 | tail -n 1 |  sed -e 's/^.*:\([^:]*\):$/\1/'`
 if [ -z "$GPG_RES" ]; then
 	echo "I cannot find your master key."
 	exit 1
@@ -225,7 +228,7 @@ cat > "$ROOT"/bin/export-revocation-certificate <<'EOF'
 echo -n "Enter your name or e-mail address: "
 read NAME
 echo ""
-GPG_RES=`LANG=C gpg --list-keys --with-colons "$NAME" 2>&/dev/null | grep -e "^pub" -A 1 | tail -n 1 |  sed -e 's/^.*:\([^:]*\):$/\1/'`
+GPG_RES=`LANG=C gpg --list-keys --with-colons "$NAME" 2>/dev/null | grep -e "^pub" -A 1 | tail -n 1 |  sed -e 's/^.*:\([^:]*\):$/\1/'`
 if [ -z "$GPG_RES" ]; then
 	echo "I cannot find your master key."
 	exit 1
@@ -244,6 +247,8 @@ gpg --output /$GPG_RES.gpg-revocation-certificate --gen-revoke $GPG_RES || (
 echo "Finished."
 exit 0
 EOF
+chmod 0755 "$ROOT"/bin/export-revocation-certificate
+chmod 0755 "$ROOT"/bin/apply-subkey
 
 echo "Creating users..."
 NEW_UID=1000
@@ -251,6 +256,7 @@ NEW_GID=1000
 chroot "$ROOT" groupadd -g "$NEW_GID" "$ORIG_USER"
 chroot "$ROOT" useradd -m -u "$NEW_UID" -g "$ORIG_USER" -s "/bin/bash" "$ORIG_USER"
 mount "$DEV_FS" "$ROOT_HOME" || errorexit "mount"
+chroot "$ROOT" chown "$ORIG_USER:$ORIG_USER" "/home/$ORIG_USER"
 while read FILE; do
 	if [ ! "$FILE" = "." -a ! -e "$ROOT_HOME/$FILE" ]; then
 		cp -r "$ROOT/etc/skel/$FILE" "$ROOT_HOME/$FILE"
@@ -275,7 +281,7 @@ echo 'cd ~' >> "$ROOT_HOME/.bashrc"
 
 # Run
 echo "Running container..."
-systemd-nspawn -D "$ROOT" -- su "$ORIG_USER"
+systemd-nspawn -D "$ROOT" --bind `tty`:/dev/tty --bind /dev/tty0 --bind /dev/console -- su "$ORIG_USER" &>`tty`
 
 if [ -e "$ROOT/exported-subkeys" ]; then
 	echo "Exported subkeys detected. Applying to your machine..."
